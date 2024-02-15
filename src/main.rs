@@ -1,16 +1,17 @@
 mod api;
+mod graphql;
 mod model;
 mod schema;
 
 use std::{env, io};
 
 use actix_cors::Cors;
-use actix_web::web::Data;
-use actix_web::{http, middleware};
+use actix_web::middleware::Logger;
+use actix_web::web;
 use actix_web::{App, HttpServer};
 use diesel::{r2d2::ConnectionManager, PgConnection};
 
-pub type DbPool = r2d2::Pool<ConnectionManager<PgConnection>>;
+pub type ConnectionPool = graphql::ConnectionPool;
 
 #[actix_rt::main]
 async fn main() -> io::Result<()> {
@@ -28,16 +29,11 @@ async fn main() -> io::Result<()> {
 
     HttpServer::new(move || {
         App::new()
-            .app_data(Data::new(pool.clone()))
-            .wrap(
-                Cors::default()
-                    .allowed_origin("http://localhost:3000")
-                    .allowed_methods(vec!["GET", "POST"])
-                    .allowed_header(http::header::AUTHORIZATION)
-                    .allowed_header(http::header::ACCEPT)
-                    .allowed_header(http::header::CONTENT_TYPE),
-            )
-            .wrap(middleware::Logger::default())
+            .app_data(web::Data::new(graphql::create_schema(pool.clone())))
+            .wrap(Cors::permissive())
+            .wrap(Logger::default())
+            .configure(graphql::configure_service)
+            .app_data(web::Data::new(pool.clone()))
             .service(api::project::list)
             .service(api::project::add)
             .service(api::unit::list)

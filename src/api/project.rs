@@ -3,7 +3,7 @@ use diesel::RunQueryDsl;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{api::ApiError, model, DbPool};
+use crate::{api::ApiError, model, ConnectionPool};
 
 use crate::schema::project;
 
@@ -14,7 +14,7 @@ struct Project {
 }
 
 #[actix_web::get("/project")]
-pub async fn list(pool: web::Data<DbPool>) -> Result<web::Json<Vec<Project>>, ApiError> {
+pub async fn list(pool: web::Data<ConnectionPool>) -> Result<web::Json<Vec<Project>>, ApiError> {
     let mut conn = pool.get().map_err(|_| ApiError::ServerError)?;
 
     let result = web::block(move || project::table.load::<model::Project>(&mut conn))
@@ -44,7 +44,7 @@ struct NewProject {
 
 #[actix_web::post("/project")]
 pub async fn add(
-    pool: web::Data<DbPool>,
+    pool: web::Data<ConnectionPool>,
     new_project: web::Json<NewProject>,
 ) -> Result<web::Json<Uuid>, ApiError> {
     let mut conn = pool.get().map_err(|_| ApiError::ServerError)?;

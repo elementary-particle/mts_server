@@ -9,6 +9,8 @@ edition = "2021"
 actix-cors = "0.7.0"
 actix-rt = "2.9.0"
 actix-web = "4.5.1"
+async-graphql = { version = "7.0.1", features = ["uuid", "playground", "chrono"], default-features = false }
+async-graphql-actix-web = "7.0.1"
 chrono = { version = "0.4.33", features = ["serde"] }
 diesel = { version = "2.1.4", features = ["postgres", "uuid", "chrono", "r2d2"] }
 dotenv = "0.15.0"

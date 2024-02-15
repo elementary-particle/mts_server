@@ -3,7 +3,7 @@ use diesel::{ExpressionMethods, QueryDsl, RunQueryDsl};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{api::ApiError, model, DbPool};
+use crate::{api::ApiError, model, ConnectionPool};
 
 use crate::schema::{source, unit};
 
@@ -22,7 +22,7 @@ struct Unit {
 
 #[actix_web::get("/unit")]
 pub async fn list(
-    pool: web::Data<DbPool>,
+    pool: web::Data<ConnectionPool>,
     project_ref: web::Query<ProjectRef>,
 ) -> Result<web::Json<Vec<Unit>>, ApiError> {
     let mut conn = pool.get().map_err(|_| ApiError::ServerError)?;
@@ -69,9 +69,9 @@ struct Source {
     pub meta: String,
 }
 
-#[actix_web::get("/unit")]
+#[actix_web::get("/unit/source")]
 pub async fn sources(
-    pool: web::Data<DbPool>,
+    pool: web::Data<ConnectionPool>,
     unit_ref: web::Query<UnitRef>,
 ) -> Result<web::Json<Vec<Source>>, ApiError> {
     let mut conn = pool.get().map_err(|_| ApiError::ServerError)?;
@@ -113,7 +113,7 @@ struct NewUnit {
 
 #[actix_web::post("/unit")]
 pub async fn add(
-    pool: web::Data<DbPool>,
+    pool: web::Data<ConnectionPool>,
     new_unit: web::Json<NewUnit>,
 ) -> Result<web::Json<Uuid>, ApiError> {
     let mut conn = pool.get().map_err(|_| ApiError::ServerError)?;
