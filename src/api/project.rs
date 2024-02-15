@@ -46,11 +46,12 @@ struct NewProject {
 pub async fn add(
     pool: web::Data<DbPool>,
     new_project: web::Json<NewProject>,
-) -> Result<web::Json<usize>, ApiError> {
+) -> Result<web::Json<Uuid>, ApiError> {
     let mut conn = pool.get().map_err(|_| ApiError::ServerError)?;
 
+    let project_id = Uuid::new_v4();
     let project = model::Project {
-        id: Uuid::new_v4(),
+        id: project_id,
         name: new_project.into_inner().name,
     };
 
@@ -63,7 +64,7 @@ pub async fn add(
     .map_err(|_| ApiError::ServerError)?;
 
     match result {
-        Ok(rows_affected) => Ok(web::Json(rows_affected)),
+        Ok(_) => Ok(web::Json(project_id)),
         Err(err) => Err(ApiError::BadRequest {
             message: err.to_string(),
         }),

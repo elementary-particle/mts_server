@@ -109,7 +109,7 @@ struct NewCommit {
 pub async fn add(
     pool: web::Data<DbPool>,
     new_commit: web::Json<NewCommit>,
-) -> Result<web::Json<usize>, ApiError> {
+) -> Result<web::Json<Uuid>, ApiError> {
     let mut conn = pool.get().map_err(|_| ApiError::ServerError)?;
 
     let new_commit = new_commit.into_inner();
@@ -141,7 +141,7 @@ pub async fn add(
     .map_err(|_| ApiError::ServerError)?;
 
     match result {
-        Ok(rows_affected) => Ok(web::Json(rows_affected)),
+        Ok(_) => Ok(web::Json(commit_id)),
         Err(err) => Err(ApiError::BadRequest {
             message: err.to_string(),
         }),

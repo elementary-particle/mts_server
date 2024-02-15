@@ -1,12 +1,11 @@
 use actix_web::web;
-use chrono::{DateTime, NaiveDateTime, Utc};
-use diesel::{ExpressionMethods, NullableExpressionMethods, QueryDsl, RunQueryDsl};
+use diesel::{ExpressionMethods, QueryDsl, RunQueryDsl};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{api::ApiError, model, DbPool};
 
-use crate::schema::{commit, source, unit};
+use crate::schema::{source, unit};
 
 #[derive(Debug, Deserialize)]
 struct ProjectRef {
@@ -17,8 +16,8 @@ struct ProjectRef {
 struct Unit {
     pub id: Uuid,
     pub title: String,
-    #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
-    pub updated_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit: Option<Uuid>,
 }
 
 #[actix_web::get("/unit")]
@@ -31,15 +30,8 @@ pub async fn list(
     let result = web::block(move || {
         unit::table
             .filter(unit::dsl::project_id.eq(project_ref.into_inner().project))
-            .left_join(commit::table)
-            .group_by(unit::dsl::id)
-            .select((
-                unit::dsl::id,
-                unit::dsl::title,
-                diesel::dsl::max(commit::dsl::created_at.nullable()),
-            ))
             .order_by(unit::dsl::title)
-            .load::<(Uuid, String, Option<NaiveDateTime>)>(&mut conn)
+            .load::<model::Unit>(&mut conn)
     })
     .await
     .map_err(|_| ApiError::ServerError)?;
@@ -53,12 +45,9 @@ pub async fn list(
             unit_list
                 .into_iter()
                 .map(|t| Unit {
-                    id: t.0,
-                    title: t.1,
-                    updated_at: match t.2 {
-                        Some(time) => Some(time.and_utc()),
-                        None => None,
-                    },
+                    id: t.id,
+                    title: t.title,
+                    commit: t.commit_id,
                 })
                 .collect::<Vec<_>>(),
         )),
@@ -126,7 +115,7 @@ struct NewUnit {
 pub async fn add(
     pool: web::Data<DbPool>,
     new_unit: web::Json<NewUnit>,
-) -> Result<web::Json<usize>, ApiError> {
+) -> Result<web::Json<Uuid>, ApiError> {
     let mut conn = pool.get().map_err(|_| ApiError::ServerError)?;
 
     let new_unit = new_unit.into_inner();
@@ -138,6 +127,7 @@ pub async fn add(
                 project_id: new_unit.project,
                 id: unit_id,
                 title: new_unit.title,
+                commit_id: None,
             })
             .execute(&mut conn)?;
         diesel::insert_into(source::dsl::source)
@@ -159,7 +149,7 @@ pub async fn add(
     .map_err(|_| ApiError::ServerError)?;
 
     match result {
-        Ok(rows_affected) => Ok(web::Json(rows_affected)),
+        Ok(_) => Ok(web::Json(unit_id)),
         Err(err) => Err(ApiError::BadRequest {
             message: err.to_string(),
         }),

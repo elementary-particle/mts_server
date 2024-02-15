@@ -39,6 +39,7 @@ diesel::table! {
         project_id -> Uuid,
         #[max_length = 256]
         title -> Varchar,
+        commit_id -> Nullable<Uuid>,
     }
 }
 
