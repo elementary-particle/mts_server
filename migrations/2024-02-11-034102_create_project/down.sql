@@ -6,3 +6,5 @@ DROP TABLE "commit";
 DROP TABLE "source";
 DROP TABLE "unit";
 DROP TABLE "project";
+DROP INDEX "user_name_idx";
+DROP TABLE "user";

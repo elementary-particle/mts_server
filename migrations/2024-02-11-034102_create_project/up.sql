@@ -1,3 +1,13 @@
+CREATE TABLE "user"
+(
+    "id" UUID PRIMARY KEY NOT NULL,
+    "name" VARCHAR(32) UNIQUE NOT NULL,
+    "hash" VARCHAR NOT NULL,
+    "is_admin" BOOLEAN NOT NULL
+);
+
+CREATE UNIQUE INDEX "user_name_idx" ON "user"("name");
+
 CREATE TABLE "project"
 (
     "id" UUID PRIMARY KEY NOT NULL,
@@ -28,6 +38,7 @@ CREATE TABLE "commit"
     "id" UUID PRIMARY KEY NOT NULL,
     "unit_id" UUID NOT NULL,
     "created_at" TIMESTAMP NOT NULL,
+    "editor_id" UUID NOT NULL REFERENCES "user"("id"),
     FOREIGN KEY("unit_id") REFERENCES "unit"("id")
 );
 

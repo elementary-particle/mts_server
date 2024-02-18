@@ -9,13 +9,18 @@ edition = "2021"
 actix-cors = "0.7.0"
 actix-rt = "2.9.0"
 actix-web = "4.5.1"
-async-graphql = { version = "7.0.1", features = ["uuid", "playground", "chrono"], default-features = false }
-async-graphql-actix-web = "7.0.1"
+argon2 = "0.5.3"
+base64 = "0.21.7"
+bincode = "1.3.3"
 chrono = { version = "0.4.33", features = ["serde"] }
 diesel = { version = "2.1.4", features = ["postgres", "uuid", "chrono", "r2d2"] }
-dotenv = "0.15.0"
+dotenvy = "0.15.7"
 env_logger = "0.11.1"
+hmac = "0.12.1"
+juniper = { git = "https://github.com/graphql-rust/juniper.git", features = ["chrono", "uuid"]}
 r2d2 = "0.8.10"
+rand = "0.8.5"
 serde = { version = "1.0.196", features = ["derive"] }
 serde_json = "1.0.113"
+sha2 = "0.10.8"
 uuid = { version = "1.7.0", features = ["v4", "serde"] }

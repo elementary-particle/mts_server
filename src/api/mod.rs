@@ -7,14 +7,19 @@ pub mod unit;
 #[derive(Debug)]
 enum ApiError {
     ServerError,
-    BadRequest { message: String },
+    Unauthorized,
+    BadRequest,
 }
 
 impl std::fmt::Display for ApiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ApiError::ServerError => write!(f, "The server has encountered an internal error"),
-            ApiError::BadRequest { message } => write!(f, "{}", message),
+            ApiError::Unauthorized => write!(
+                f,
+                "You don't have permission to access the requested resource"
+            ),
+            ApiError::BadRequest => write!(f, "Bad request"),
         }
     }
 }
@@ -23,7 +28,8 @@ impl ResponseError for ApiError {
     fn status_code(&self) -> StatusCode {
         match self {
             Self::ServerError => StatusCode::INTERNAL_SERVER_ERROR,
-            Self::BadRequest { .. } => StatusCode::BAD_REQUEST,
+            Self::Unauthorized => StatusCode::FORBIDDEN,
+            Self::BadRequest => StatusCode::BAD_REQUEST,
         }
     }
 

@@ -5,6 +5,7 @@ diesel::table! {
         id -> Uuid,
         unit_id -> Uuid,
         created_at -> Timestamp,
+        editor_id -> Uuid,
     }
 }
 
@@ -43,7 +44,18 @@ diesel::table! {
     }
 }
 
+diesel::table! {
+    user (id) {
+        id -> Uuid,
+        #[max_length = 32]
+        name -> Varchar,
+        hash -> Varchar,
+        is_admin -> Bool,
+    }
+}
+
 diesel::joinable!(commit -> unit (unit_id));
+diesel::joinable!(commit -> user (editor_id));
 diesel::joinable!(record -> commit (commit_id));
 diesel::joinable!(source -> unit (unit_id));
 diesel::joinable!(unit -> project (project_id));
@@ -54,4 +66,5 @@ diesel::allow_tables_to_appear_in_same_query!(
     record,
     source,
     unit,
+    user,
 );

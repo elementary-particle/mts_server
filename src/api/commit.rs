@@ -1,149 +1,122 @@
 use actix_web::web;
 use chrono::{DateTime, Utc};
-use diesel::query_dsl::methods::FilterDsl;
-use diesel::{ExpressionMethods, RunQueryDsl};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{api::ApiError, model, ConnectionPool};
-
-use crate::schema::{commit, record};
+use crate::api::ApiError;
+use crate::auth::Claim;
+use crate::repo;
 
 #[derive(Debug, Deserialize)]
-struct UnitRef {
-    pub unit: Uuid,
+#[serde(rename_all = "camelCase")]
+struct UnitQuery {
+    pub unit_id: Uuid,
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct Commit {
     pub id: Uuid,
-    #[serde(rename = "createdAt")]
     pub created_at: DateTime<Utc>,
 }
 
 #[actix_web::get("/commit")]
 pub async fn list(
-    pool: web::Data<ConnectionPool>,
-    unit_ref: web::Query<UnitRef>,
+    repo: web::Data<repo::Repo>,
+    unit_query: web::Query<UnitQuery>,
 ) -> Result<web::Json<Vec<Commit>>, ApiError> {
-    let mut conn = pool.get().map_err(|_| ApiError::ServerError)?;
+    let commit_list =
+        web::block(move || repo.get_commit_by_unit_id(unit_query.into_inner().unit_id))
+            .await
+            .map_err(|_| ApiError::ServerError)?
+            .ok_or(ApiError::BadRequest)?;
 
-    let unit_id = unit_ref.into_inner().unit;
-
-    let result = web::block(move || {
-        commit::table
-            .filter(commit::dsl::unit_id.eq(unit_id))
-            .load::<model::Commit>(&mut conn)
-    })
-    .await
-    .map_err(|_| ApiError::ServerError)?;
-
-    match result {
-        Ok(commit_list) => Ok(web::Json(
-            commit_list
-                .into_iter()
-                .map(|t| Commit {
-                    id: t.id,
-                    created_at: t.created_at.and_utc(),
-                })
-                .collect::<Vec<_>>(),
-        )),
-        Err(err) => Err(ApiError::BadRequest {
-            message: err.to_string(),
-        }),
-    }
+    Ok(web::Json(
+        commit_list
+            .into_iter()
+            .map(|t| Commit {
+                id: t.id,
+                created_at: t.created_at.and_utc(),
+            })
+            .collect::<Vec<_>>(),
+    ))
 }
 
 #[derive(Debug, Deserialize)]
-struct CommitRef {
+#[serde(rename_all = "camelCase")]
+struct CommitQuery {
     pub id: Uuid,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Record {
     pub sq: i32,
     pub content: String,
 }
 
 #[actix_web::get("/commit/record")]
-pub async fn records(
-    pool: web::Data<ConnectionPool>,
-    commit_ref: web::Query<CommitRef>,
+pub async fn get_record_list(
+    repo: web::Data<repo::Repo>,
+    commit_query: web::Query<CommitQuery>,
 ) -> Result<web::Json<Vec<Record>>, ApiError> {
-    let mut conn = pool.get().map_err(|_| ApiError::ServerError)?;
+    let record_list =
+        web::block(move || repo.get_record_by_commit_id(commit_query.into_inner().id))
+            .await
+            .map_err(|_| ApiError::ServerError)?
+            .ok_or(ApiError::BadRequest)?;
 
-    let commit_id = commit_ref.into_inner().id;
-
-    let result = web::block(move || {
-        record::table
-            .filter(record::dsl::commit_id.eq(commit_id))
-            .load::<model::Record>(&mut conn)
-    })
-    .await
-    .map_err(|_| ApiError::ServerError)?;
-
-    match result {
-        Ok(record_list) => Ok(web::Json(
-            record_list
-                .into_iter()
-                .map(|t: model::Record| Record {
-                    sq: t.sq,
-                    content: t.content,
-                })
-                .collect::<Vec<_>>(),
-        )),
-        Err(err) => Err(ApiError::BadRequest {
-            message: err.to_string(),
-        }),
-    }
+    Ok(web::Json(
+        record_list
+            .into_iter()
+            .map(|t| Record {
+                sq: t.sq,
+                content: t.content,
+            })
+            .collect::<Vec<_>>(),
+    ))
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct NewCommit {
-    pub unit: Uuid,
-    #[serde(rename = "recordList")]
+    pub unit_id: Uuid,
     pub record_list: Vec<Record>,
 }
 
 #[actix_web::post("/commit")]
 pub async fn add(
-    pool: web::Data<ConnectionPool>,
+    claim: Claim,
+    repo: web::Data<repo::Repo>,
     new_commit: web::Json<NewCommit>,
 ) -> Result<web::Json<Uuid>, ApiError> {
-    let mut conn = pool.get().map_err(|_| ApiError::ServerError)?;
+    let user_id = match claim {
+        Claim::Guest => Err(ApiError::Unauthorized),
+        Claim::User { id, .. } => Ok(id),
+    }?;
 
-    let new_commit = new_commit.into_inner();
+    let new_unit = new_commit.into_inner();
     let commit_id = Uuid::new_v4();
+    let commit = repo::Commit {
+        id: commit_id,
+        unit_id: new_unit.unit_id,
+        created_at: Utc::now().naive_utc(),
+        editor_id: user_id,
+    };
+    let record_list = new_unit
+        .record_list
+        .into_iter()
+        .map(|t| repo::Record {
+            commit_id: commit_id,
+            sq: t.sq,
+            content: t.content,
+        })
+        .collect::<Vec<_>>();
 
-    let result = web::block(move || {
-        diesel::insert_into(commit::table)
-            .values(model::Commit {
-                id: commit_id,
-                unit_id: new_commit.unit,
-                created_at: Utc::now().naive_utc(),
-            })
-            .execute(&mut conn)?;
-        diesel::insert_into(record::table)
-            .values(
-                new_commit
-                    .record_list
-                    .into_iter()
-                    .map(|t| model::Record {
-                        commit_id: commit_id,
-                        sq: t.sq,
-                        content: t.content,
-                    })
-                    .collect::<Vec<_>>(),
-            )
-            .execute(&mut conn)
-    })
-    .await
-    .map_err(|_| ApiError::ServerError)?;
+    web::block(move || repo.add_commit(commit, record_list))
+        .await
+        .map_err(|_| ApiError::ServerError)?
+        .ok_or(ApiError::BadRequest)?;
 
-    match result {
-        Ok(_) => Ok(web::Json(commit_id)),
-        Err(err) => Err(ApiError::BadRequest {
-            message: err.to_string(),
-        }),
-    }
+    Ok(web::Json(commit_id))
 }

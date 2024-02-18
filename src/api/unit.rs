@@ -1,68 +1,57 @@
 use actix_web::web;
-use diesel::{ExpressionMethods, QueryDsl, RunQueryDsl};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{api::ApiError, model, ConnectionPool};
-
-use crate::schema::{source, unit};
+use crate::api::ApiError;
+use crate::auth::Claim;
+use crate::repo;
 
 #[derive(Debug, Deserialize)]
-struct ProjectRef {
-    pub project: Uuid,
+#[serde(rename_all = "camelCase")]
+struct ProjectQuery {
+    pub project_id: Uuid,
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct Unit {
     pub id: Uuid,
     pub title: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub commit: Option<Uuid>,
+    pub commit_id: Option<Uuid>,
 }
 
 #[actix_web::get("/unit")]
-pub async fn list(
-    pool: web::Data<ConnectionPool>,
-    project_ref: web::Query<ProjectRef>,
+pub async fn get_list(
+    repo: web::Data<repo::Repo>,
+    project_query: web::Query<ProjectQuery>,
 ) -> Result<web::Json<Vec<Unit>>, ApiError> {
-    let mut conn = pool.get().map_err(|_| ApiError::ServerError)?;
+    let unit_list =
+        web::block(move || repo.get_unit_by_project_id(project_query.into_inner().project_id))
+            .await
+            .map_err(|_| ApiError::ServerError)?
+            .ok_or(ApiError::BadRequest)?;
 
-    let result = web::block(move || {
-        unit::table
-            .filter(unit::dsl::project_id.eq(project_ref.into_inner().project))
-            .order_by(unit::dsl::title)
-            .load::<model::Unit>(&mut conn)
-    })
-    .await
-    .map_err(|_| ApiError::ServerError)?;
-
-    match result {
-        Ok(ref unit_list) => println!("{}", unit_list.len()),
-        Err(_) => (),
-    };
-    match result {
-        Ok(unit_list) => Ok(web::Json(
-            unit_list
-                .into_iter()
-                .map(|t| Unit {
-                    id: t.id,
-                    title: t.title,
-                    commit: t.commit_id,
-                })
-                .collect::<Vec<_>>(),
-        )),
-        Err(err) => Err(ApiError::BadRequest {
-            message: err.to_string(),
-        }),
-    }
+    Ok(web::Json(
+        unit_list
+            .into_iter()
+            .map(|t| Unit {
+                id: t.id,
+                title: t.title,
+                commit_id: t.commit_id,
+            })
+            .collect::<Vec<_>>(),
+    ))
 }
 
 #[derive(Debug, Deserialize)]
-struct UnitRef {
+#[serde(rename_all = "camelCase")]
+struct UnitQuery {
     pub id: Uuid,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Source {
     pub sq: i32,
     pub content: String,
@@ -70,88 +59,69 @@ struct Source {
 }
 
 #[actix_web::get("/unit/source")]
-pub async fn sources(
-    pool: web::Data<ConnectionPool>,
-    unit_ref: web::Query<UnitRef>,
+pub async fn get_source_list(
+    repo: web::Data<repo::Repo>,
+    unit_query: web::Query<UnitQuery>,
 ) -> Result<web::Json<Vec<Source>>, ApiError> {
-    let mut conn = pool.get().map_err(|_| ApiError::ServerError)?;
+    let source_list = web::block(move || repo.get_source_by_unit_id(unit_query.into_inner().id))
+        .await
+        .map_err(|_| ApiError::ServerError)?
+        .ok_or(ApiError::BadRequest)?;
 
-    let unit_id = unit_ref.into_inner().id;
-
-    let result = web::block(move || {
-        source::table
-            .filter(source::dsl::unit_id.eq(unit_id))
-            .load::<model::Source>(&mut conn)
-    })
-    .await
-    .map_err(|_| ApiError::ServerError)?;
-
-    match result {
-        Ok(record_list) => Ok(web::Json(
-            record_list
-                .into_iter()
-                .map(|t: model::Source| Source {
-                    sq: t.sq,
-                    content: t.content,
-                    meta: t.meta,
-                })
-                .collect::<Vec<_>>(),
-        )),
-        Err(err) => Err(ApiError::BadRequest {
-            message: err.to_string(),
-        }),
-    }
+    Ok(web::Json(
+        source_list
+            .into_iter()
+            .map(|t| Source {
+                sq: t.sq,
+                content: t.content,
+                meta: t.meta,
+            })
+            .collect::<Vec<_>>(),
+    ))
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct NewUnit {
-    pub project: Uuid,
+    pub project_id: Uuid,
     pub title: String,
-    #[serde(rename = "sourceList")]
     pub source_list: Vec<Source>,
 }
 
 #[actix_web::post("/unit")]
 pub async fn add(
-    pool: web::Data<ConnectionPool>,
+    claim: Claim,
+    repo: web::Data<repo::Repo>,
     new_unit: web::Json<NewUnit>,
 ) -> Result<web::Json<Uuid>, ApiError> {
-    let mut conn = pool.get().map_err(|_| ApiError::ServerError)?;
+    match claim {
+        Claim::Guest => Err(ApiError::Unauthorized),
+        Claim::User { .. } => Ok(()),
+    }?;
 
     let new_unit = new_unit.into_inner();
     let unit_id = Uuid::new_v4();
+    let unit = repo::Unit {
+        id: unit_id,
+        project_id: new_unit.project_id,
+        title: new_unit.title,
+        commit_id: None,
+    };
+    let source_list = new_unit
+        .source_list
+        .into_iter()
+        .map(|t| repo::Source {
+            unit_id: unit_id,
+            sq: t.sq,
+            content: t.content,
+            meta: t.meta,
+        })
+        .collect::<Vec<_>>();
 
-    let result = web::block(move || {
-        diesel::insert_into(unit::table)
-            .values(model::Unit {
-                project_id: new_unit.project,
-                id: unit_id,
-                title: new_unit.title,
-                commit_id: None,
-            })
-            .execute(&mut conn)?;
-        diesel::insert_into(source::dsl::source)
-            .values(
-                new_unit
-                    .source_list
-                    .into_iter()
-                    .map(|t| model::Source {
-                        unit_id: unit_id,
-                        sq: t.sq,
-                        content: t.content,
-                        meta: t.meta,
-                    })
-                    .collect::<Vec<_>>(),
-            )
-            .execute(&mut conn)
-    })
-    .await
-    .map_err(|_| ApiError::ServerError)?;
+    web::block(move || repo.add_unit(unit, source_list))
+        .await
+        .map_err(|_| ApiError::ServerError)?
+        .ok_or(ApiError::BadRequest)?;
 
-    match result {
-        Ok(_) => Ok(web::Json(unit_id)),
-        Err(err) => Err(ApiError::BadRequest {
-            message: err.to_string(),
-        }),
-    }
+    Ok(web::Json(unit_id))
 }
