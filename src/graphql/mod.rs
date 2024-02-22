@@ -52,11 +52,17 @@ pub fn create_schema() -> Schema {
 }
 
 #[derive(Debug)]
-struct ServiceError;
+struct ServiceError(repo::Error);
+
+impl From<repo::Error> for ServiceError {
+    fn from(error: repo::Error) -> Self {
+        ServiceError(error)
+    }
+}
 
 impl std::fmt::Display for ServiceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "An error occurred")
+        self.0.fmt(f)
     }
 }
 

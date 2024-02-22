@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::api::ApiError;
+use crate::api::ServiceError;
 use crate::auth::Claim;
 use crate::repo;
 
@@ -24,12 +24,9 @@ struct Commit {
 pub async fn list(
     repo: web::Data<repo::Repo>,
     unit_query: web::Query<UnitQuery>,
-) -> Result<web::Json<Vec<Commit>>, ApiError> {
+) -> Result<web::Json<Vec<Commit>>, ServiceError> {
     let commit_list =
-        web::block(move || repo.get_commit_by_unit_id(unit_query.into_inner().unit_id))
-            .await
-            .map_err(|_| ApiError::ServerError)?
-            .ok_or(ApiError::BadRequest)?;
+        web::block(move || repo.get_commit_by_unit_id(unit_query.into_inner().unit_id)).await??;
 
     Ok(web::Json(
         commit_list
@@ -48,6 +45,19 @@ struct CommitQuery {
     pub id: Uuid,
 }
 
+#[actix_web::get("/commit/by-id")]
+pub async fn get_by_id(
+    repo: web::Data<repo::Repo>,
+    commit_query: web::Query<CommitQuery>,
+) -> Result<web::Json<Commit>, ServiceError> {
+    let commit = web::block(move || repo.get_commit_by_id(commit_query.into_inner().id)).await??;
+
+    Ok(web::Json(Commit {
+        id: commit.id,
+        created_at: commit.created_at.and_utc(),
+    }))
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Record {
@@ -59,12 +69,9 @@ struct Record {
 pub async fn get_record_list(
     repo: web::Data<repo::Repo>,
     commit_query: web::Query<CommitQuery>,
-) -> Result<web::Json<Vec<Record>>, ApiError> {
+) -> Result<web::Json<Vec<Record>>, ServiceError> {
     let record_list =
-        web::block(move || repo.get_record_by_commit_id(commit_query.into_inner().id))
-            .await
-            .map_err(|_| ApiError::ServerError)?
-            .ok_or(ApiError::BadRequest)?;
+        web::block(move || repo.get_record_by_commit_id(commit_query.into_inner().id)).await??;
 
     Ok(web::Json(
         record_list
@@ -89,9 +96,9 @@ pub async fn add(
     claim: Claim,
     repo: web::Data<repo::Repo>,
     new_commit: web::Json<NewCommit>,
-) -> Result<web::Json<Uuid>, ApiError> {
+) -> Result<web::Json<Uuid>, ServiceError> {
     let user_id = match claim {
-        Claim::Guest => Err(ApiError::Unauthorized),
+        Claim::Guest => Err(ServiceError::Unauthorized),
         Claim::User { id, .. } => Ok(id),
     }?;
 
@@ -113,10 +120,7 @@ pub async fn add(
         })
         .collect::<Vec<_>>();
 
-    web::block(move || repo.add_commit(commit, record_list))
-        .await
-        .map_err(|_| ApiError::ServerError)?
-        .ok_or(ApiError::BadRequest)?;
+    web::block(move || repo.add_commit(commit, record_list)).await??;
 
     Ok(web::Json(commit_id))
 }

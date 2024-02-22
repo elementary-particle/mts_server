@@ -1,5 +1,5 @@
 use actix_web::body::BoxBody;
-use actix_web::cookie::Cookie;
+use actix_web::cookie::{Cookie, SameSite};
 use actix_web::{web, HttpResponse, Responder};
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
@@ -31,23 +31,22 @@ impl Responder for LoginResponse {
                     .path("/")
                     .secure(true)
                     .http_only(true)
+                    .same_site(SameSite::Strict)
                     .finish(),
             )
             .json(self.id)
     }
 }
 
-#[actix_web::post("/login")]
-pub async fn login(
+#[actix_web::post("/signin")]
+pub async fn signin(
     secret: web::Data<Secret>,
     repo: web::Data<repo::Repo>,
     request: web::Json<LoginRequest>,
 ) -> Result<LoginResponse, ServiceError> {
     let request = request.into_inner();
 
-    let user = repo
-        .get_user_by_name(request.name)
-        .ok_or(ServiceError::WrongPassword)?;
+    let user = repo.get_user_by_name(request.name)?;
 
     let hash = PasswordHash::new(&user.hash).map_err(|_| ServiceError::ServerError)?;
 
@@ -93,8 +92,7 @@ pub fn create_user(
         name: name.into(),
         hash,
         is_admin: is_admin,
-    })
-    .ok_or(ServiceError::ServerError)?;
+    })?;
 
     Ok(user_id)
 }
@@ -131,5 +129,5 @@ pub async fn add_user(
 }
 
 pub fn configure(config: &mut web::ServiceConfig) {
-    config.service(login).service(check_id).service(add_user);
+    config.service(signin).service(check_id).service(add_user);
 }

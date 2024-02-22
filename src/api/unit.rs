@@ -2,7 +2,7 @@ use actix_web::web;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::api::ApiError;
+use crate::api::ServiceError;
 use crate::auth::Claim;
 use crate::repo;
 
@@ -25,12 +25,10 @@ struct Unit {
 pub async fn get_list(
     repo: web::Data<repo::Repo>,
     project_query: web::Query<ProjectQuery>,
-) -> Result<web::Json<Vec<Unit>>, ApiError> {
+) -> Result<web::Json<Vec<Unit>>, ServiceError> {
     let unit_list =
         web::block(move || repo.get_unit_by_project_id(project_query.into_inner().project_id))
-            .await
-            .map_err(|_| ApiError::ServerError)?
-            .ok_or(ApiError::BadRequest)?;
+            .await??;
 
     Ok(web::Json(
         unit_list
@@ -50,6 +48,20 @@ struct UnitQuery {
     pub id: Uuid,
 }
 
+#[actix_web::get("/unit/by-id")]
+pub async fn get_by_id(
+    repo: web::Data<repo::Repo>,
+    unit_query: web::Query<UnitQuery>,
+) -> Result<web::Json<Unit>, ServiceError> {
+    let unit = web::block(move || repo.get_unit_by_id(unit_query.into_inner().id)).await??;
+
+    Ok(web::Json(Unit {
+        id: unit.id,
+        title: unit.title,
+        commit_id: unit.commit_id,
+    }))
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Source {
@@ -62,11 +74,9 @@ struct Source {
 pub async fn get_source_list(
     repo: web::Data<repo::Repo>,
     unit_query: web::Query<UnitQuery>,
-) -> Result<web::Json<Vec<Source>>, ApiError> {
-    let source_list = web::block(move || repo.get_source_by_unit_id(unit_query.into_inner().id))
-        .await
-        .map_err(|_| ApiError::ServerError)?
-        .ok_or(ApiError::BadRequest)?;
+) -> Result<web::Json<Vec<Source>>, ServiceError> {
+    let source_list =
+        web::block(move || repo.get_source_by_unit_id(unit_query.into_inner().id)).await??;
 
     Ok(web::Json(
         source_list
@@ -93,9 +103,9 @@ pub async fn add(
     claim: Claim,
     repo: web::Data<repo::Repo>,
     new_unit: web::Json<NewUnit>,
-) -> Result<web::Json<Uuid>, ApiError> {
+) -> Result<web::Json<Uuid>, ServiceError> {
     match claim {
-        Claim::Guest => Err(ApiError::Unauthorized),
+        Claim::Guest => Err(ServiceError::Unauthorized),
         Claim::User { .. } => Ok(()),
     }?;
 
@@ -118,10 +128,7 @@ pub async fn add(
         })
         .collect::<Vec<_>>();
 
-    web::block(move || repo.add_unit(unit, source_list))
-        .await
-        .map_err(|_| ApiError::ServerError)?
-        .ok_or(ApiError::BadRequest)?;
+    web::block(move || repo.add_unit(unit, source_list)).await??;
 
     Ok(web::Json(unit_id))
 }

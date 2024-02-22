@@ -41,19 +41,22 @@ async fn main() -> io::Result<()> {
 
     HttpServer::new(move || {
         App::new()
-            .wrap(Cors::permissive())
             .wrap(Logger::new("%a \"%r\" %s %b %T"))
+            .wrap(Cors::permissive())
             .app_data(web::Data::new(secret.clone()))
             .app_data(web::Data::new(repo.clone()))
             .service(
                 web::scope("/api")
                     .service(web::scope("/auth").configure(auth::service::configure))
                     .service(api::project::list)
+                    .service(api::project::get_by_id)
                     .service(api::project::add)
                     .service(api::unit::get_list)
+                    .service(api::unit::get_by_id)
                     .service(api::unit::get_source_list)
                     .service(api::unit::add)
                     .service(api::commit::list)
+                    .service(api::commit::get_by_id)
                     .service(api::commit::get_record_list)
                     .service(api::commit::add),
             )

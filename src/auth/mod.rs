@@ -1,16 +1,20 @@
 pub mod service;
 
 use std::future::{ready, Ready};
+use std::rc::Rc;
 
-use actix_web::body::BoxBody;
-use actix_web::{http, web, FromRequest, HttpResponse, ResponseError};
+use actix_web::dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform};
+use actix_web::{web, FromRequest, HttpMessage};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use bincode::{deserialize, serialize};
+use futures_util::future::{FutureExt as _, LocalBoxFuture};
 use hmac::{Mac, SimpleHmac};
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use uuid::Uuid;
+
+use crate::api::ServiceError;
 
 #[derive(Clone)]
 pub struct Secret {
@@ -87,7 +91,8 @@ impl Claim {
             .app_data::<web::Data<Secret>>()
             .ok_or(ServiceError::ServerError)?;
         match req.cookie("token") {
-            Some(cookie) => Self::from_token(cookie.value(), secret).or(Ok(Claim::Guest)),
+            Some(cookie) => Self::from_token(cookie.value(), secret)
+                .or(Err(ServiceError::InvalidToken { cookie })),
             None => Ok(Claim::Guest),
         }
     }
@@ -105,37 +110,59 @@ impl FromRequest for Claim {
     }
 }
 
-#[derive(Debug)]
-pub enum ServiceError {
-    ServerError,
-    WrongPassword,
-    Unauthorized,
+pub struct Authenticate;
+
+impl<S, B> Transform<S, ServiceRequest> for Authenticate
+where
+    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = actix_web::Error> + 'static,
+    S::Future: 'static,
+    B: 'static,
+{
+    type Response = ServiceResponse<B>;
+    type Error = actix_web::Error;
+    type InitError = ();
+    type Transform = AuthenticateMiddleware<S>;
+    type Future = Ready<Result<Self::Transform, Self::InitError>>;
+
+    fn new_transform(&self, service: S) -> Self::Future {
+        ready(Ok(AuthenticateMiddleware {
+            service: Rc::new(service),
+        }))
+    }
 }
 
-impl std::fmt::Display for ServiceError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ServiceError::ServerError => write!(f, "The server has encountered an internal error"),
-            ServiceError::WrongPassword => {
-                write!(f, "Wrong name and password combination")
+pub struct AuthenticateMiddleware<S> {
+    service: Rc<S>,
+}
+
+impl<S, B> Service<ServiceRequest> for AuthenticateMiddleware<S>
+where
+    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = actix_web::Error> + 'static,
+    S::Future: 'static,
+    B: 'static,
+{
+    type Response = ServiceResponse<B>;
+    type Error = actix_web::Error;
+    type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
+
+    forward_ready!(service);
+
+    fn call(&self, req: ServiceRequest) -> Self::Future {
+        let service = self.service.clone();
+
+        async move {
+            let secret = req.app_data::<Secret>().ok_or(ServiceError::ServerError)?;
+
+            if let Some(cookie) = req.cookie("token") {
+                if let Ok(claim) = Claim::from_token(cookie.value(), secret) {
+                    req.extensions_mut().insert(claim);
+                } else {
+                    return Err(ServiceError::InvalidToken { cookie }.into());
+                }
             }
-            ServiceError::Unauthorized => write!(f, "Permission denied"),
-        }
-    }
-}
 
-impl ResponseError for ServiceError {
-    fn status_code(&self) -> http::StatusCode {
-        match self {
-            ServiceError::ServerError => http::StatusCode::INTERNAL_SERVER_ERROR,
-            ServiceError::WrongPassword => http::StatusCode::BAD_REQUEST,
-            ServiceError::Unauthorized => http::StatusCode::UNAUTHORIZED,
+            Ok(service.call(req).await?)
         }
-    }
-
-    fn error_response(&self) -> HttpResponse<BoxBody> {
-        HttpResponse::build(self.status_code())
-            .content_type("text/plain")
-            .body(self.to_string())
+        .boxed_local()
     }
 }

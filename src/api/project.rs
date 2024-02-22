@@ -2,7 +2,7 @@ use actix_web::web;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::api::ApiError;
+use crate::api::ServiceError;
 use crate::auth::Claim;
 use crate::repo;
 
@@ -14,11 +14,8 @@ struct Project {
 }
 
 #[actix_web::get("/project")]
-pub async fn list(repo: web::Data<repo::Repo>) -> Result<web::Json<Vec<Project>>, ApiError> {
-    let project_list = web::block(move || repo.get_project())
-        .await
-        .map_err(|_| ApiError::ServerError)?
-        .ok_or(ApiError::BadRequest)?;
+pub async fn list(repo: web::Data<repo::Repo>) -> Result<web::Json<Vec<Project>>, ServiceError> {
+    let project_list = web::block(move || repo.get_project()).await??;
 
     Ok(web::Json(
         project_list
@@ -33,6 +30,26 @@ pub async fn list(repo: web::Data<repo::Repo>) -> Result<web::Json<Vec<Project>>
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ProjectQuery {
+    pub id: Uuid,
+}
+
+#[actix_web::get("/project/by-id")]
+pub async fn get_by_id(
+    repo: web::Data<repo::Repo>,
+    project_query: web::Query<ProjectQuery>,
+) -> Result<web::Json<Project>, ServiceError> {
+    let project =
+        web::block(move || repo.get_project_by_id(project_query.into_inner().id)).await??;
+
+    Ok(web::Json(Project {
+        id: project.id,
+        name: project.name,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct NewProject {
     pub name: String,
 }
@@ -42,9 +59,9 @@ pub async fn add(
     claim: Claim,
     repo: web::Data<repo::Repo>,
     new_project: web::Json<NewProject>,
-) -> Result<web::Json<Uuid>, ApiError> {
+) -> Result<web::Json<Uuid>, ServiceError> {
     match claim {
-        Claim::Guest => Err(ApiError::Unauthorized),
+        Claim::Guest => Err(ServiceError::Unauthorized),
         Claim::User { .. } => Ok(()),
     }?;
 
@@ -54,10 +71,7 @@ pub async fn add(
         name: new_project.into_inner().name,
     };
 
-    web::block(move || repo.add_project(project))
-        .await
-        .map_err(|_| ApiError::ServerError)?
-        .ok_or(ApiError::BadRequest)?;
+    web::block(move || repo.add_project(project)).await??;
 
     Ok(web::Json(project_id))
 }

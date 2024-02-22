@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::repo;
 
-use super::{Context, QueryRoot, ServiceError};
+use super::{Context, QueryRoot};
 
 #[juniper::graphql_object(Context = Context)]
 impl repo::Project {
@@ -17,9 +17,7 @@ impl repo::Project {
     }
 
     fn unit_list(&self, ctx: &Context) -> FieldResult<Vec<repo::Unit>> {
-        ctx.repo
-            .get_unit_by_project_id(self.id)
-            .ok_or(ServiceError.into())
+        Ok(ctx.repo.get_unit_by_project_id(self.id)?)
     }
 }
 
@@ -42,21 +40,22 @@ impl repo::Unit {
     }
 
     fn project(&self, ctx: &Context) -> FieldResult<repo::Project> {
-        ctx.repo
-            .get_project_by_id(self.project_id)
-            .ok_or(ServiceError.into())
+        Ok(ctx.repo.get_project_by_id(self.project_id)?)
     }
 
     fn commit_list(&self, ctx: &Context) -> FieldResult<Vec<repo::Commit>> {
-        ctx.repo
-            .get_commit_by_unit_id(self.id)
-            .ok_or(ServiceError.into())
+        Ok(ctx.repo.get_commit_by_unit_id(self.id)?)
     }
 
     fn source_list(&self, ctx: &Context) -> FieldResult<Vec<repo::Source>> {
-        ctx.repo
-            .get_source_by_unit_id(self.id)
-            .ok_or(ServiceError.into())
+        Ok(ctx.repo.get_source_by_unit_id(self.id)?)
+    }
+
+    fn latest_commit(&self, ctx: &Context) -> FieldResult<Option<repo::Commit>> {
+        match self.commit_id {
+            Some(id) => Ok(Some(ctx.repo.get_commit_by_id(id)?)),
+            None => Ok(None),
+        }
     }
 }
 
@@ -79,33 +78,29 @@ impl repo::Commit {
     }
 
     fn unit(&self, ctx: &Context) -> FieldResult<repo::Unit> {
-        ctx.repo
-            .get_unit_by_id(self.unit_id)
-            .ok_or(ServiceError.into())
+        Ok(ctx.repo.get_unit_by_id(self.unit_id)?)
     }
 
     fn record_list(&self, ctx: &Context) -> FieldResult<Vec<repo::Record>> {
-        ctx.repo
-            .get_record_by_commit_id(self.id)
-            .ok_or(ServiceError.into())
+        Ok(ctx.repo.get_record_by_commit_id(self.id)?)
     }
 }
 
 #[juniper::graphql_object(Context = Context)]
 impl QueryRoot {
     fn project_list(ctx: &Context) -> FieldResult<Vec<repo::Project>> {
-        ctx.repo.get_project().ok_or(ServiceError.into())
+        Ok(ctx.repo.get_project()?)
     }
 
     fn project(ctx: &Context, id: Uuid) -> FieldResult<repo::Project> {
-        ctx.repo.get_project_by_id(id).ok_or(ServiceError.into())
+        Ok(ctx.repo.get_project_by_id(id)?)
     }
 
     fn unit(ctx: &Context, id: Uuid) -> FieldResult<repo::Unit> {
-        ctx.repo.get_unit_by_id(id).ok_or(ServiceError.into())
+        Ok(ctx.repo.get_unit_by_id(id)?)
     }
 
     fn commit(ctx: &Context, id: Uuid) -> FieldResult<repo::Commit> {
-        ctx.repo.get_commit_by_id(id).ok_or(ServiceError.into())
+        Ok(ctx.repo.get_commit_by_id(id)?)
     }
 }
