@@ -205,6 +205,7 @@ impl Repo {
 
         schema::unit::table
             .filter(schema::unit::project_id.eq(project_id))
+            .order_by(schema::unit::title)
             .load::<Unit>(&mut conn)
             .map_err(Error::from)
     }
@@ -239,6 +240,7 @@ impl Repo {
 
         schema::source::table
             .filter(schema::source::unit_id.eq(unit_id))
+            .order_by(schema::source::sq)
             .load::<Source>(&mut conn)
             .map_err(Error::from)
     }
@@ -248,6 +250,7 @@ impl Repo {
 
         schema::commit::table
             .filter(schema::commit::unit_id.eq(unit_id))
+            .order_by(schema::commit::created_at)
             .load::<Commit>(&mut conn)
             .map_err(Error::from)
     }
@@ -282,6 +285,7 @@ impl Repo {
 
         schema::record::table
             .filter(schema::record::commit_id.eq(commit_id))
+            .order_by(schema::record::sq)
             .load::<Record>(&mut conn)
             .map_err(Error::from)
     }
