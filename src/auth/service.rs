@@ -11,17 +11,17 @@ use crate::auth::{Claim, Secret, ServiceError};
 use crate::repo;
 
 #[derive(Deserialize)]
-struct LoginRequest {
+struct SignInRequest {
     name: String,
     pass: String,
 }
 
-struct LoginResponse {
+struct SignInResponse {
     pub token: String,
     pub id: Uuid,
 }
 
-impl Responder for LoginResponse {
+impl Responder for SignInResponse {
     type Body = BoxBody;
 
     fn respond_to(self, _req: &actix_web::HttpRequest) -> HttpResponse<Self::Body> {
@@ -42,8 +42,8 @@ impl Responder for LoginResponse {
 pub async fn signin(
     secret: web::Data<Secret>,
     repo: web::Data<repo::Repo>,
-    request: web::Json<LoginRequest>,
-) -> Result<LoginResponse, ServiceError> {
+    request: web::Json<SignInRequest>,
+) -> Result<SignInResponse, ServiceError> {
     let request = request.into_inner();
 
     let user = repo.get_user_by_name(request.name)?;
@@ -63,7 +63,7 @@ pub async fn signin(
         .to_token(&secret.into_inner())
         .map_err(|_| ServiceError::ServerError)?;
 
-    Ok(LoginResponse { token, id: user.id })
+    Ok(SignInResponse { token, id: user.id })
 }
 
 #[actix_web::post("/id")]
