@@ -1,12 +1,14 @@
 pub mod service;
 
+use std::collections::VecDeque;
 use std::future::{ready, Ready};
 use std::rc::Rc;
+use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use actix_web::dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform};
 use actix_web::{web, FromRequest, HttpMessage};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use bincode::{deserialize, serialize};
 use futures_util::future::{FutureExt as _, LocalBoxFuture};
 use hmac::{Mac, SimpleHmac};
 use rand::{rngs::OsRng, RngCore};
@@ -16,23 +18,48 @@ use uuid::Uuid;
 
 use crate::api::ServiceError;
 
-#[derive(Clone)]
+const TOKEN_DURATION: u64 = 2 * 24 * 60 * 60;
+
+fn timestamp_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+pub struct Key {
+    pub bytes: [u8; 32],
+    pub expires: u64,
+}
+
+impl Key {
+    pub fn generate(expires: u64) -> Self {
+        let mut key = Key {
+            bytes: [0; 32],
+            expires,
+        };
+        OsRng.fill_bytes(&mut key.bytes);
+        key
+    }
+}
+
 pub struct Secret {
-    pub key: [u8; 32],
+    pub keys: VecDeque<Key>,
 }
 
 impl Secret {
-    pub fn generate() -> Self {
-        let mut secret = Secret { key: [0; 32] };
-        OsRng.fill_bytes(&mut secret.key);
-        secret
+    pub fn new() -> Self {
+        Secret {
+            keys: VecDeque::new(),
+        }
     }
 }
 
 #[derive(Deserialize, Serialize)]
-pub enum Claim {
-    User { id: Uuid, is_admin: bool },
-    Guest,
+pub struct Claim {
+    pub id: Uuid,
+    pub expires: u64,
+    pub is_admin: bool,
 }
 
 pub struct TokenError;
@@ -47,7 +74,7 @@ where
 }
 
 impl Claim {
-    fn from_token(s: &str, secret: &Secret) -> Result<Self, TokenError> {
+    fn from_token(s: &str, secret: &mut Secret) -> Result<Self, TokenError> {
         let mut parts = s.split(".");
 
         let claim_raw = parts
@@ -64,18 +91,60 @@ impl Claim {
             None => Ok(()),
         }?;
 
-        let mut mac = SimpleHmac::<Sha256>::new_from_slice(&secret.key)?;
+        let current_timestamp = timestamp_now();
 
-        mac.update(&claim_raw);
-        mac.verify_slice(&signature_raw)?;
+        while let Some(key) = secret.keys.front() {
+            if key.expires <= current_timestamp {
+                secret.keys.pop_front();
+            } else {
+                break;
+            }
+        }
 
-        Ok(deserialize(&claim_raw)?)
+        let mut valid = false;
+
+        for key in secret.keys.iter().rev() {
+            let mut mac = SimpleHmac::<Sha256>::new_from_slice(&key.bytes)?;
+
+            mac.update(&claim_raw);
+            if mac.verify_slice(&signature_raw).is_ok() {
+                valid = true;
+                break;
+            }
+        }
+
+        let claim: Claim = serde_cbor::from_slice(&claim_raw)?;
+
+        if claim.expires < current_timestamp {
+            return Err(TokenError);
+        }
+
+        match valid {
+            true => Ok(claim),
+            false => Err(TokenError),
+        }
     }
 
-    fn to_token(&self, secret: &Secret) -> Result<String, TokenError> {
-        let mut mac = SimpleHmac::<Sha256>::new_from_slice(&secret.key).map_err(|_| TokenError)?;
+    fn to_token(&self, secret: &mut Secret) -> Result<String, TokenError> {
+        let mut has_key = false;
 
-        let claim_raw = serialize(self)?;
+        if let Some(key) = secret.keys.back() {
+            if key.expires >= self.expires {
+                has_key = true;
+            }
+        }
+
+        if !has_key {
+            let current_timestamp = timestamp_now();
+            let key = Key::generate(current_timestamp + 2 * TOKEN_DURATION);
+
+            secret.keys.push_back(key);
+        }
+        let key = secret.keys.back().unwrap();
+
+        let mut mac = SimpleHmac::<Sha256>::new_from_slice(&key.bytes).map_err(|_| TokenError)?;
+
+        let claim_raw = serde_cbor::to_vec(self)?;
         mac.update(&claim_raw);
 
         let signature_raw = mac.finalize().into_bytes();
@@ -88,12 +157,12 @@ impl Claim {
 
     fn from_request_sync(req: &actix_web::HttpRequest) -> Result<Self, ServiceError> {
         let secret = req
-            .app_data::<web::Data<Secret>>()
+            .app_data::<web::Data<Mutex<Secret>>>()
             .ok_or(ServiceError::ServerError)?;
         match req.cookie("token") {
-            Some(cookie) => Self::from_token(cookie.value(), secret)
+            Some(cookie) => Self::from_token(cookie.value(), &mut secret.lock().unwrap())
                 .or(Err(ServiceError::InvalidToken { cookie })),
-            None => Ok(Claim::Guest),
+            None => Err(ServiceError::Unauthorized),
         }
     }
 }
@@ -151,10 +220,12 @@ where
         let service = self.service.clone();
 
         async move {
-            let secret = req.app_data::<Secret>().ok_or(ServiceError::ServerError)?;
+            let secret = req
+                .app_data::<Mutex<Secret>>()
+                .ok_or(ServiceError::ServerError)?;
 
             if let Some(cookie) = req.cookie("token") {
-                if let Ok(claim) = Claim::from_token(cookie.value(), secret) {
+                if let Ok(claim) = Claim::from_token(cookie.value(), &mut secret.lock().unwrap()) {
                     req.extensions_mut().insert(claim);
                 } else {
                     return Err(ServiceError::InvalidToken { cookie }.into());

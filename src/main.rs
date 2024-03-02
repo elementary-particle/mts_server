@@ -4,7 +4,7 @@ mod graphql;
 mod repo;
 mod schema;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::{env, io};
 
 use actix_cors::Cors;
@@ -34,7 +34,7 @@ async fn main() -> io::Result<()> {
     let manager = ConnectionManager::<PgConnection>::new(database_url);
     let pool = r2d2::Pool::builder().build(manager).unwrap();
     let repo = repo::Repo::new(pool);
-    let secret = auth::Secret::generate();
+    let secret = Arc::new(Mutex::new(auth::Secret::new()));
     let schema = Arc::new(graphql::create_schema());
 
     let _ = auth::service::create_user(repo.clone(), "admin", &admin_pass, true);
@@ -43,7 +43,7 @@ async fn main() -> io::Result<()> {
         App::new()
             .wrap(Logger::new("%a \"%r\" %s %b %T"))
             .wrap(Cors::permissive())
-            .app_data(web::Data::new(secret.clone()))
+            .app_data(web::Data::from(secret.clone()))
             .app_data(web::Data::new(repo.clone()))
             .service(
                 web::scope("/api")

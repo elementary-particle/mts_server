@@ -163,6 +163,15 @@ impl Repo {
             .map_err(Error::from)
     }
 
+    pub fn get_user_by_id(&self, id: Uuid) -> Result<User, Error> {
+        let mut conn = self.pool.get()?;
+
+        schema::user::table
+            .filter(schema::user::id.eq(id))
+            .first::<User>(&mut conn)
+            .map_err(Error::from)
+    }
+
     pub fn add_user(&self, user: User) -> Result<(), Error> {
         let mut conn = self.pool.get()?;
 

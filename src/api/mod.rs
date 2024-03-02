@@ -3,7 +3,7 @@ pub mod project;
 pub mod unit;
 
 use actix_web::body::BoxBody;
-use actix_web::cookie::Cookie;
+use actix_web::cookie::{Cookie, SameSite};
 use actix_web::error::BlockingError;
 use actix_web::{http::StatusCode, HttpResponse, ResponseError};
 
@@ -65,12 +65,15 @@ impl ResponseError for ServiceError {
 
     fn error_response(&self) -> HttpResponse<BoxBody> {
         match self {
-            ServiceError::InvalidToken { cookie } => {
-                let mut removal_cookie = cookie.clone();
-                removal_cookie.make_removal();
+            ServiceError::InvalidToken { .. } => {
+                let mut cookie = Cookie::build("token", "")
+                    .path("/")
+                    .same_site(SameSite::Strict)
+                    .finish();
+                cookie.make_removal();
                 HttpResponse::build(self.status_code())
                     .content_type("text/plain")
-                    .cookie(removal_cookie)
+                    .cookie(cookie)
                     .body(self.to_string())
             }
             _ => HttpResponse::build(self.status_code())

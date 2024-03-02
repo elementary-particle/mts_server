@@ -7,7 +7,7 @@ use crate::auth::Claim;
 use crate::repo;
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "kebab-case")]
 struct ProjectQuery {
     pub project_id: Uuid,
 }
@@ -43,7 +43,7 @@ pub async fn get_list(
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "kebab-case")]
 struct UnitQuery {
     pub id: Uuid,
 }
@@ -100,15 +100,10 @@ struct NewUnit {
 
 #[actix_web::post("/unit")]
 pub async fn add(
-    claim: Claim,
+    _claim: Claim,
     repo: web::Data<repo::Repo>,
     new_unit: web::Json<NewUnit>,
 ) -> Result<web::Json<Uuid>, ServiceError> {
-    match claim {
-        Claim::Guest => Err(ServiceError::Unauthorized),
-        Claim::User { .. } => Ok(()),
-    }?;
-
     let new_unit = new_unit.into_inner();
     let unit_id = Uuid::new_v4();
     let unit = repo::Unit {

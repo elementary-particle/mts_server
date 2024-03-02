@@ -1,14 +1,19 @@
+use std::sync::Mutex;
+
 use actix_web::body::BoxBody;
+use actix_web::cookie::time::{Duration, OffsetDateTime};
 use actix_web::cookie::{Cookie, SameSite};
 use actix_web::{web, HttpResponse, Responder};
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
 use rand::rngs::OsRng;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::auth::{Claim, Secret, ServiceError};
 use crate::repo;
+
+use super::{timestamp_now, TOKEN_DURATION};
 
 #[derive(Deserialize)]
 struct SignInRequest {
@@ -18,7 +23,7 @@ struct SignInRequest {
 
 struct SignInResponse {
     pub token: String,
-    pub id: Uuid,
+    pub expires: u64,
 }
 
 impl Responder for SignInResponse {
@@ -32,15 +37,19 @@ impl Responder for SignInResponse {
                     .secure(true)
                     .http_only(true)
                     .same_site(SameSite::Strict)
+                    .expires(
+                        OffsetDateTime::UNIX_EPOCH
+                            + Duration::seconds(self.expires.try_into().unwrap()),
+                    )
                     .finish(),
             )
-            .json(self.id)
+            .body("")
     }
 }
 
-#[actix_web::post("/signin")]
-pub async fn signin(
-    secret: web::Data<Secret>,
+#[actix_web::post("/sign-in")]
+pub async fn sign_in(
+    secret: web::Data<Mutex<Secret>>,
     repo: web::Data<repo::Repo>,
     request: web::Json<SignInRequest>,
 ) -> Result<SignInResponse, ServiceError> {
@@ -54,24 +63,61 @@ pub async fn signin(
         .verify_password(&request.pass.into_bytes(), &hash)
         .map_err(|_| ServiceError::WrongPassword)?;
 
-    let claim = Claim::User {
+    let expires = timestamp_now() + TOKEN_DURATION;
+
+    let claim = Claim {
         id: user.id.clone(),
+        expires: expires,
         is_admin: user.is_admin,
     };
 
     let token = claim
-        .to_token(&secret.into_inner())
+        .to_token(&mut secret.lock().unwrap())
         .map_err(|_| ServiceError::ServerError)?;
 
-    Ok(SignInResponse { token, id: user.id })
+    Ok(SignInResponse { token, expires })
 }
 
-#[actix_web::post("/id")]
-pub async fn check_id(claim: Claim) -> Result<web::Json<Uuid>, ServiceError> {
-    match claim {
-        Claim::User { id, .. } => Ok(web::Json(id)),
-        Claim::Guest => Err(ServiceError::Unauthorized),
+struct SignOutResponse {}
+
+impl Responder for SignOutResponse {
+    type Body = BoxBody;
+
+    fn respond_to(self, req: &actix_web::HttpRequest) -> HttpResponse<Self::Body> {
+        if let Some(_) = req.cookie("token") {
+            let mut cookie = Cookie::build("token", "")
+                .path("/")
+                .same_site(SameSite::Strict)
+                .finish();
+            cookie.make_removal();
+            HttpResponse::Ok()
+                .cookie(cookie)
+                .content_type("text/plain")
+                .body("")
+        } else {
+            HttpResponse::Ok().content_type("text/plain").body("")
+        }
     }
+}
+
+#[actix_web::get("/sign-out")]
+async fn sign_out() -> SignOutResponse {
+    SignOutResponse {}
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UserInfo {
+    pub id: Uuid,
+    pub is_admin: bool,
+}
+
+#[actix_web::get("/claim")]
+pub async fn check_claim(claim: Claim) -> Result<web::Json<UserInfo>, ServiceError> {
+    Ok(web::Json(UserInfo {
+        id: claim.id,
+        is_admin: claim.is_admin,
+    }))
 }
 
 pub fn create_user(
@@ -98,6 +144,32 @@ pub fn create_user(
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "kebab-case")]
+struct UserQuery {
+    id: Uuid,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct User {
+    id: Uuid,
+    name: String,
+}
+
+#[actix_web::get("/user")]
+async fn get_user(
+    repo: web::Data<repo::Repo>,
+    _claim: Claim,
+    query: web::Query<UserQuery>,
+) -> Result<web::Json<User>, ServiceError> {
+    let user = repo.get_user_by_id(query.id)?;
+    Ok(web::Json(User {
+        id: user.id,
+        name: user.name,
+    }))
+}
+
+#[derive(Deserialize)]
 struct NewUser {
     name: String,
     pass: String,
@@ -111,13 +183,9 @@ pub async fn add_user(
 ) -> Result<web::Json<Uuid>, ServiceError> {
     let new_user = new_user.into_inner();
 
-    match claim {
-        Claim::User { id: _, is_admin } => match is_admin {
-            true => Ok(()),
-            false => Err(ServiceError::Unauthorized),
-        },
-        Claim::Guest => Err(ServiceError::Unauthorized),
-    }?;
+    if !claim.is_admin {
+        return Err(ServiceError::Unauthorized);
+    }
 
     create_user(
         repo.get_ref().clone(),
@@ -129,5 +197,10 @@ pub async fn add_user(
 }
 
 pub fn configure(config: &mut web::ServiceConfig) {
-    config.service(signin).service(check_id).service(add_user);
+    config
+        .service(sign_in)
+        .service(sign_out)
+        .service(check_claim)
+        .service(get_user)
+        .service(add_user);
 }

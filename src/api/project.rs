@@ -29,7 +29,7 @@ pub async fn list(repo: web::Data<repo::Repo>) -> Result<web::Json<Vec<Project>>
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "kebab-case")]
 struct ProjectQuery {
     pub id: Uuid,
 }
@@ -56,15 +56,10 @@ struct NewProject {
 
 #[actix_web::post("/project")]
 pub async fn add(
-    claim: Claim,
+    _claim: Claim,
     repo: web::Data<repo::Repo>,
     new_project: web::Json<NewProject>,
 ) -> Result<web::Json<Uuid>, ServiceError> {
-    match claim {
-        Claim::Guest => Err(ServiceError::Unauthorized),
-        Claim::User { .. } => Ok(()),
-    }?;
-
     let project_id = Uuid::new_v4();
     let project = repo::Project {
         id: project_id,

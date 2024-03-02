@@ -8,7 +8,7 @@ use crate::auth::Claim;
 use crate::repo;
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "kebab-case")]
 struct UnitQuery {
     pub unit_id: Uuid,
 }
@@ -17,6 +17,7 @@ struct UnitQuery {
 #[serde(rename_all = "camelCase")]
 struct Commit {
     pub id: Uuid,
+    pub created_by: Uuid,
     pub created_at: DateTime<Utc>,
 }
 
@@ -33,6 +34,7 @@ pub async fn list(
             .into_iter()
             .map(|t| Commit {
                 id: t.id,
+                created_by: t.editor_id,
                 created_at: t.created_at.and_utc(),
             })
             .collect::<Vec<_>>(),
@@ -40,7 +42,7 @@ pub async fn list(
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "kebab-case")]
 struct CommitQuery {
     pub id: Uuid,
 }
@@ -54,6 +56,7 @@ pub async fn get_by_id(
 
     Ok(web::Json(Commit {
         id: commit.id,
+        created_by: commit.editor_id,
         created_at: commit.created_at.and_utc(),
     }))
 }
@@ -97,10 +100,7 @@ pub async fn add(
     repo: web::Data<repo::Repo>,
     new_commit: web::Json<NewCommit>,
 ) -> Result<web::Json<Uuid>, ServiceError> {
-    let user_id = match claim {
-        Claim::Guest => Err(ServiceError::Unauthorized),
-        Claim::User { id, .. } => Ok(id),
-    }?;
+    let user_id = claim.id;
 
     let new_unit = new_commit.into_inner();
     let commit_id = Uuid::new_v4();
