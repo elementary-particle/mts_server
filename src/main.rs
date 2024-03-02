@@ -12,6 +12,17 @@ use actix_web::middleware::Logger;
 use actix_web::web;
 use actix_web::{App, HttpServer};
 use diesel::{r2d2::ConnectionManager, PgConnection};
+use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
+
+pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("./migrations");
+
+fn run_migrations(
+    connection: &mut impl MigrationHarness<diesel::pg::Pg>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
+    connection.run_pending_migrations(MIGRATIONS)?;
+
+    Ok(())
+}
 
 pub type ConnectionPool = r2d2::Pool<ConnectionManager<PgConnection>>;
 
@@ -33,6 +44,9 @@ async fn main() -> io::Result<()> {
 
     let manager = ConnectionManager::<PgConnection>::new(database_url);
     let pool = r2d2::Pool::builder().build(manager).unwrap();
+
+    run_migrations(&mut pool.get().unwrap()).unwrap();
+
     let repo = repo::Repo::new(pool);
     let secret = Arc::new(Mutex::new(auth::Secret::new()));
     let schema = Arc::new(graphql::create_schema());
