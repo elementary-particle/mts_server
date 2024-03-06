@@ -1,19 +1,21 @@
 pub mod service;
 
 use std::collections::VecDeque;
-use std::future::{ready, Ready};
-use std::rc::Rc;
-use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, RwLock};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use actix_web::dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform};
-use actix_web::{web, FromRequest, HttpMessage};
+use axum::async_trait;
+use axum::extract::{FromRef, FromRequestParts};
+use axum::http::request::Parts;
+use axum::http::StatusCode;
+use axum_extra::extract::cookie::{Cookie, SameSite};
+use axum_extra::extract::CookieJar;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use futures_util::future::{FutureExt as _, LocalBoxFuture};
 use hmac::{Mac, SimpleHmac};
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::api::ServiceError;
@@ -43,7 +45,7 @@ impl Key {
     }
 }
 
-pub struct Secret {
+struct Secret {
     pub keys: VecDeque<Key>,
 }
 
@@ -53,6 +55,34 @@ impl Secret {
             keys: VecDeque::new(),
         }
     }
+
+    pub fn rotate(&mut self) -> &Key {
+        let current_timestamp = timestamp_now();
+
+        while let Some(key) = self.keys.front() {
+            if key.expires <= current_timestamp {
+                self.keys.pop_front();
+            } else {
+                break;
+            }
+        }
+
+        if self.keys.back().is_none() {
+            self.keys
+                .push_back(Key::generate(current_timestamp + 2 * TOKEN_DURATION));
+        }
+
+        self.keys.back().unwrap()
+    }
+}
+
+#[derive(Clone)]
+pub struct AuthRwLock(Arc<RwLock<Secret>>);
+
+impl AuthRwLock {
+    pub fn new() -> Self {
+        AuthRwLock(Arc::new(RwLock::new(Secret::new())))
+    }
 }
 
 #[derive(Deserialize, Serialize)]
@@ -61,6 +91,8 @@ pub struct Claim {
     pub expires: u64,
     pub is_admin: bool,
 }
+
+pub struct OptionalClaim(pub Option<Claim>);
 
 pub struct TokenError;
 
@@ -74,7 +106,7 @@ where
 }
 
 impl Claim {
-    fn from_token(s: &str, secret: &mut Secret) -> Result<Self, TokenError> {
+    fn from_token(s: &str, lock: Arc<RwLock<Secret>>) -> Result<Self, TokenError> {
         let mut parts = s.split(".");
 
         let claim_raw = parts
@@ -93,147 +125,117 @@ impl Claim {
 
         let current_timestamp = timestamp_now();
 
-        while let Some(key) = secret.keys.front() {
-            if key.expires <= current_timestamp {
-                secret.keys.pop_front();
-            } else {
-                break;
-            }
-        }
-
         let mut valid = false;
+        {
+            let secret = lock.read().unwrap();
 
-        for key in secret.keys.iter().rev() {
-            let mut mac = SimpleHmac::<Sha256>::new_from_slice(&key.bytes)?;
+            for key in secret.keys.iter().rev() {
+                if key.expires > current_timestamp {
+                    let mut mac = SimpleHmac::<Sha256>::new_from_slice(&key.bytes)?;
 
-            mac.update(&claim_raw);
-            if mac.verify_slice(&signature_raw).is_ok() {
-                valid = true;
-                break;
+                    mac.update(&claim_raw);
+                    if mac.verify_slice(&signature_raw).is_ok() {
+                        valid = true;
+                        break;
+                    }
+                }
             }
         }
-
-        let claim: Claim = serde_cbor::from_slice(&claim_raw)?;
-
-        if claim.expires < current_timestamp {
+        if !valid {
             return Err(TokenError);
         }
 
-        match valid {
-            true => Ok(claim),
-            false => Err(TokenError),
+        let claim: Claim = serde_cbor::from_slice(&claim_raw)?;
+        if claim.expires <= current_timestamp {
+            return Err(TokenError);
         }
+
+        Ok(claim)
     }
 
-    fn to_token(&self, secret: &mut Secret) -> Result<String, TokenError> {
-        let mut has_key = false;
+    fn to_token(&self, lock: Arc<RwLock<Secret>>) -> Result<String, TokenError> {
+        let mut mac = {
+            let mut secret = lock.write().unwrap();
+            let key = secret.rotate();
 
-        if let Some(key) = secret.keys.back() {
-            if key.expires >= self.expires {
-                has_key = true;
-            }
-        }
+            SimpleHmac::<Sha256>::new_from_slice(&key.bytes).map_err(|_| TokenError)?
+        };
 
-        if !has_key {
-            let current_timestamp = timestamp_now();
-            let key = Key::generate(current_timestamp + 2 * TOKEN_DURATION);
-
-            secret.keys.push_back(key);
-        }
-        let key = secret.keys.back().unwrap();
-
-        let mut mac = SimpleHmac::<Sha256>::new_from_slice(&key.bytes).map_err(|_| TokenError)?;
-
-        let claim_raw = serde_cbor::to_vec(self)?;
-        mac.update(&claim_raw);
+        let claim_bytes = serde_cbor::to_vec(self)?;
+        mac.update(&claim_bytes);
 
         let signature_raw = mac.finalize().into_bytes();
 
-        let claim_code = STANDARD.encode(&claim_raw);
-        let signature_code = STANDARD.encode(&signature_raw);
+        let claim_str = STANDARD.encode(&claim_bytes);
+        let sig_str = STANDARD.encode(&signature_raw);
 
-        Ok(format!("{}.{}", claim_code, signature_code))
-    }
-
-    fn from_request_sync(req: &actix_web::HttpRequest) -> Result<Self, ServiceError> {
-        let secret = req
-            .app_data::<web::Data<Mutex<Secret>>>()
-            .ok_or(ServiceError::ServerError)?;
-        match req.cookie("token") {
-            Some(cookie) => Self::from_token(cookie.value(), &mut secret.lock().unwrap())
-                .or(Err(ServiceError::InvalidToken { cookie })),
-            None => Err(ServiceError::Unauthorized),
-        }
+        Ok(format!("{}.{}", claim_str, sig_str))
     }
 }
 
-impl FromRequest for Claim {
-    type Error = ServiceError;
-    type Future = Ready<Result<Self, Self::Error>>;
-
-    fn from_request(
-        req: &actix_web::HttpRequest,
-        _payload: &mut actix_web::dev::Payload,
-    ) -> Self::Future {
-        ready(Self::from_request_sync(req))
-    }
-}
-
-pub struct Authenticate;
-
-impl<S, B> Transform<S, ServiceRequest> for Authenticate
+#[async_trait]
+impl<S> FromRequestParts<S> for Claim
 where
-    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = actix_web::Error> + 'static,
-    S::Future: 'static,
-    B: 'static,
+    AuthRwLock: FromRef<S>,
+    S: Send + Sync,
 {
-    type Response = ServiceResponse<B>;
-    type Error = actix_web::Error;
-    type InitError = ();
-    type Transform = AuthenticateMiddleware<S>;
-    type Future = Ready<Result<Self::Transform, Self::InitError>>;
+    type Rejection = ServiceError;
 
-    fn new_transform(&self, service: S) -> Self::Future {
-        ready(Ok(AuthenticateMiddleware {
-            service: Rc::new(service),
-        }))
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let cookie_jar = CookieJar::from_request_parts(parts, state).await.unwrap();
+        let AuthRwLock(lock) = AuthRwLock::from_ref(state);
+        let cookie = cookie_jar
+            .get("token")
+            .ok_or((StatusCode::UNAUTHORIZED, "No token is set for the request"))?;
+
+        Ok(Claim::from_token(&cookie.value(), lock)
+            .map_err(|_| (StatusCode::UNAUTHORIZED, "The provided token is invalid"))?)
     }
 }
 
-pub struct AuthenticateMiddleware<S> {
-    service: Rc<S>,
-}
-
-impl<S, B> Service<ServiceRequest> for AuthenticateMiddleware<S>
+#[async_trait]
+impl<S> FromRequestParts<S> for OptionalClaim
 where
-    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = actix_web::Error> + 'static,
-    S::Future: 'static,
-    B: 'static,
+    AuthRwLock: FromRef<S>,
+    S: Send + Sync,
 {
-    type Response = ServiceResponse<B>;
-    type Error = actix_web::Error;
-    type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
+    type Rejection = ServiceError;
 
-    forward_ready!(service);
-
-    fn call(&self, req: ServiceRequest) -> Self::Future {
-        let service = self.service.clone();
-
-        async move {
-            let secret = req
-                .app_data::<Mutex<Secret>>()
-                .ok_or(ServiceError::ServerError)?;
-
-            if let Some(cookie) = req.cookie("token") {
-                if let Ok(claim) = Claim::from_token(cookie.value(), &mut secret.lock().unwrap()) {
-                    req.extensions_mut().insert(claim);
-                } else {
-                    return Err(ServiceError::InvalidToken { cookie }.into());
-                }
-            }
-
-            Ok(service.call(req).await?)
-        }
-        .boxed_local()
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        Ok(OptionalClaim(
+            Claim::from_request_parts(parts, state)
+                .await
+                .map_or(None, |claim| Some(claim)),
+        ))
     }
+}
+
+fn make_token(lock: Arc<RwLock<Secret>>, claim: Claim) -> Result<CookieJar, ServiceError> {
+    let token = claim
+        .to_token(lock)
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, ""))?;
+
+    let cookie: Cookie = Cookie::build(("token", token))
+        .path("/")
+        .secure(true)
+        .http_only(true)
+        .same_site(SameSite::Strict)
+        .expires(
+            OffsetDateTime::UNIX_EPOCH + Duration::from_secs(claim.expires.try_into().unwrap()),
+        )
+        .into();
+
+    Ok(CookieJar::new().add(cookie))
+}
+
+fn empty_token() -> CookieJar {
+    let mut cookie: Cookie = Cookie::build(("token", ""))
+        .path("/")
+        .secure(true)
+        .http_only(true)
+        .same_site(SameSite::Strict)
+        .into();
+    cookie.make_removal();
+
+    CookieJar::new().add(cookie)
 }

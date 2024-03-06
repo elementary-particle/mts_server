@@ -1,14 +1,27 @@
-use actix_web::web;
+use axum::extract::{FromRef, Json, Query, State};
+use axum::{routing, Router};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::api::ServiceError;
-use crate::auth::Claim;
+use crate::auth::{AuthRwLock, Claim};
 use crate::repo;
+
+pub fn build_router<S>() -> Router<S>
+where
+    S: Send + Sync + Clone + 'static,
+    AuthRwLock: FromRef<S>,
+    repo::Repo: FromRef<S>,
+{
+    Router::new()
+        .route("/", routing::get(get_list).post(add))
+        .route("/by-id", routing::get(get_by_id))
+        .route("/source", routing::get(get_source_list))
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-struct ProjectQuery {
+struct ProjectIdQuery {
     pub project_id: Uuid,
 }
 
@@ -21,16 +34,13 @@ struct Unit {
     pub commit_id: Option<Uuid>,
 }
 
-#[actix_web::get("/unit")]
-pub async fn get_list(
-    repo: web::Data<repo::Repo>,
-    project_query: web::Query<ProjectQuery>,
-) -> Result<web::Json<Vec<Unit>>, ServiceError> {
-    let unit_list =
-        web::block(move || repo.get_unit_by_project_id(project_query.into_inner().project_id))
-            .await??;
+async fn get_list(
+    State(repo): State<repo::Repo>,
+    Query(query): Query<ProjectIdQuery>,
+) -> Result<Json<Vec<Unit>>, ServiceError> {
+    let unit_list = repo.get_unit_by_project_id(query.project_id)?;
 
-    Ok(web::Json(
+    Ok(Json(
         unit_list
             .into_iter()
             .map(|t| Unit {
@@ -44,18 +54,17 @@ pub async fn get_list(
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-struct UnitQuery {
+struct IdQuery {
     pub id: Uuid,
 }
 
-#[actix_web::get("/unit/by-id")]
-pub async fn get_by_id(
-    repo: web::Data<repo::Repo>,
-    unit_query: web::Query<UnitQuery>,
-) -> Result<web::Json<Unit>, ServiceError> {
-    let unit = web::block(move || repo.get_unit_by_id(unit_query.into_inner().id)).await??;
+async fn get_by_id(
+    State(repo): State<repo::Repo>,
+    Query(query): Query<IdQuery>,
+) -> Result<Json<Unit>, ServiceError> {
+    let unit = repo.get_unit_by_id(query.id)?;
 
-    Ok(web::Json(Unit {
+    Ok(Json(Unit {
         id: unit.id,
         title: unit.title,
         commit_id: unit.commit_id,
@@ -70,15 +79,13 @@ struct Source {
     pub meta: String,
 }
 
-#[actix_web::get("/unit/source")]
-pub async fn get_source_list(
-    repo: web::Data<repo::Repo>,
-    unit_query: web::Query<UnitQuery>,
-) -> Result<web::Json<Vec<Source>>, ServiceError> {
-    let source_list =
-        web::block(move || repo.get_source_by_unit_id(unit_query.into_inner().id)).await??;
+async fn get_source_list(
+    State(repo): State<repo::Repo>,
+    Query(query): Query<IdQuery>,
+) -> Result<Json<Vec<Source>>, ServiceError> {
+    let source_list = repo.get_source_by_unit_id(query.id)?;
 
-    Ok(web::Json(
+    Ok(Json(
         source_list
             .into_iter()
             .map(|t| Source {
@@ -98,13 +105,11 @@ struct NewUnit {
     pub source_list: Vec<Source>,
 }
 
-#[actix_web::post("/unit")]
-pub async fn add(
+async fn add(
+    State(repo): State<repo::Repo>,
     _claim: Claim,
-    repo: web::Data<repo::Repo>,
-    new_unit: web::Json<NewUnit>,
-) -> Result<web::Json<Uuid>, ServiceError> {
-    let new_unit = new_unit.into_inner();
+    Json(new_unit): Json<NewUnit>,
+) -> Result<Json<Uuid>, ServiceError> {
     let unit_id = Uuid::new_v4();
     let unit = repo::Unit {
         id: unit_id,
@@ -123,7 +128,7 @@ pub async fn add(
         })
         .collect::<Vec<_>>();
 
-    web::block(move || repo.add_unit(unit, source_list)).await??;
+    repo.add_unit(unit, source_list)?;
 
-    Ok(web::Json(unit_id))
+    Ok(Json(unit_id))
 }

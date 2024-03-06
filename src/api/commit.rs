@@ -1,15 +1,28 @@
-use actix_web::web;
+use axum::extract::{FromRef, Json, Query, State};
+use axum::{routing, Router};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::api::ServiceError;
-use crate::auth::Claim;
+use crate::auth::{AuthRwLock, Claim};
 use crate::repo;
+
+pub fn build_router<S>() -> Router<S>
+where
+    S: Send + Sync + Clone + 'static,
+    AuthRwLock: FromRef<S>,
+    repo::Repo: FromRef<S>,
+{
+    Router::new()
+        .route("/", routing::get(get_list).post(add))
+        .route("/by-id", routing::get(get_by_id))
+        .route("/record", routing::get(get_record_list))
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-struct UnitQuery {
+struct UnitIdQuery {
     pub unit_id: Uuid,
 }
 
@@ -21,15 +34,13 @@ struct Commit {
     pub created_at: DateTime<Utc>,
 }
 
-#[actix_web::get("/commit")]
-pub async fn list(
-    repo: web::Data<repo::Repo>,
-    unit_query: web::Query<UnitQuery>,
-) -> Result<web::Json<Vec<Commit>>, ServiceError> {
-    let commit_list =
-        web::block(move || repo.get_commit_by_unit_id(unit_query.into_inner().unit_id)).await??;
+async fn get_list(
+    State(repo): State<repo::Repo>,
+    Query(query): Query<UnitIdQuery>,
+) -> Result<Json<Vec<Commit>>, ServiceError> {
+    let commit_list = repo.get_commit_by_unit_id(query.unit_id)?;
 
-    Ok(web::Json(
+    Ok(Json(
         commit_list
             .into_iter()
             .map(|t| Commit {
@@ -43,18 +54,17 @@ pub async fn list(
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-struct CommitQuery {
+struct IdQuery {
     pub id: Uuid,
 }
 
-#[actix_web::get("/commit/by-id")]
-pub async fn get_by_id(
-    repo: web::Data<repo::Repo>,
-    commit_query: web::Query<CommitQuery>,
-) -> Result<web::Json<Commit>, ServiceError> {
-    let commit = web::block(move || repo.get_commit_by_id(commit_query.into_inner().id)).await??;
+async fn get_by_id(
+    State(repo): State<repo::Repo>,
+    Query(query): Query<IdQuery>,
+) -> Result<Json<Commit>, ServiceError> {
+    let commit = repo.get_commit_by_id(query.id)?;
 
-    Ok(web::Json(Commit {
+    Ok(Json(Commit {
         id: commit.id,
         created_by: commit.editor_id,
         created_at: commit.created_at.and_utc(),
@@ -68,15 +78,13 @@ struct Record {
     pub content: String,
 }
 
-#[actix_web::get("/commit/record")]
-pub async fn get_record_list(
-    repo: web::Data<repo::Repo>,
-    commit_query: web::Query<CommitQuery>,
-) -> Result<web::Json<Vec<Record>>, ServiceError> {
-    let record_list =
-        web::block(move || repo.get_record_by_commit_id(commit_query.into_inner().id)).await??;
+async fn get_record_list(
+    State(repo): State<repo::Repo>,
+    Query(query): Query<IdQuery>,
+) -> Result<Json<Vec<Record>>, ServiceError> {
+    let record_list = repo.get_record_by_commit_id(query.id)?;
 
-    Ok(web::Json(
+    Ok(Json(
         record_list
             .into_iter()
             .map(|t| Record {
@@ -94,23 +102,21 @@ struct NewCommit {
     pub record_list: Vec<Record>,
 }
 
-#[actix_web::post("/commit")]
-pub async fn add(
+async fn add(
     claim: Claim,
-    repo: web::Data<repo::Repo>,
-    new_commit: web::Json<NewCommit>,
-) -> Result<web::Json<Uuid>, ServiceError> {
+    State(repo): State<repo::Repo>,
+    Json(new_commit): Json<NewCommit>,
+) -> Result<Json<Uuid>, ServiceError> {
     let user_id = claim.id;
 
-    let new_unit = new_commit.into_inner();
     let commit_id = Uuid::new_v4();
     let commit = repo::Commit {
         id: commit_id,
-        unit_id: new_unit.unit_id,
+        unit_id: new_commit.unit_id,
         created_at: Utc::now().naive_utc(),
         editor_id: user_id,
     };
-    let record_list = new_unit
+    let record_list = new_commit
         .record_list
         .into_iter()
         .map(|t| repo::Record {
@@ -120,7 +126,7 @@ pub async fn add(
         })
         .collect::<Vec<_>>();
 
-    web::block(move || repo.add_commit(commit, record_list)).await??;
+    repo.add_commit(commit, record_list)?;
 
-    Ok(web::Json(commit_id))
+    Ok(Json(commit_id))
 }

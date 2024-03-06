@@ -1,84 +1,76 @@
-pub mod commit;
-pub mod project;
-pub mod unit;
+mod commit;
+mod project;
+mod unit;
 
-use actix_web::body::BoxBody;
-use actix_web::cookie::{Cookie, SameSite};
-use actix_web::error::BlockingError;
-use actix_web::{http::StatusCode, HttpResponse, ResponseError};
+use axum::extract::FromRef;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::Router;
 
+use crate::auth::AuthRwLock;
 use crate::repo;
 
+pub fn build_router<S>() -> Router<S>
+where
+    S: Send + Sync + Clone + 'static,
+    AuthRwLock: FromRef<S>,
+    repo::Repo: FromRef<S>,
+{
+    Router::new()
+        .nest("/project", project::build_router())
+        .nest("/unit", unit::build_router())
+        .nest("/commit", commit::build_router())
+}
+
 #[derive(Debug)]
-pub enum ServiceError {
-    NotFound,
-    BadRequest { err_msg: String },
-    WrongPassword,
-    Unauthorized,
-    InvalidToken { cookie: Cookie<'static> },
-    ServerError,
+pub struct ServiceError {
+    status_code: StatusCode,
+    message: String,
+}
+
+impl From<(StatusCode, &str)> for ServiceError {
+    fn from((status_code, message): (StatusCode, &str)) -> Self {
+        ServiceError {
+            status_code,
+            message: String::from(message),
+        }
+    }
 }
 
 impl From<repo::Error> for ServiceError {
     fn from(error: repo::Error) -> Self {
+        use repo::Error::*;
         match error {
-            repo::Error::NotFound => Self::NotFound,
-            _ => Self::BadRequest {
-                err_msg: error.to_string(),
+            NotFound => ServiceError {
+                status_code: StatusCode::NOT_FOUND,
+                message: String::from("The requested resource could not be found"),
+            },
+            NotUnique { .. } | ForeignKeyViolation { .. } | ConstraintViolation { .. } => {
+                ServiceError {
+                    status_code: StatusCode::CONFLICT,
+                    message: format!("The requested operation cannot be completeed: {}", error),
+                }
+            }
+            DataError { .. } => ServiceError {
+                status_code: StatusCode::BAD_REQUEST,
+                message: String::from("Cannot serialize or deserialize data"),
+            },
+            _ => ServiceError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: String::from("The server has encountered an internal error"),
             },
         }
     }
 }
 
-impl From<BlockingError> for ServiceError {
-    fn from(_: BlockingError) -> Self {
-        Self::ServerError
-    }
-}
-
 impl std::fmt::Display for ServiceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ServiceError::NotFound => write!(f, "{}", repo::Error::NotFound.to_string()),
-            ServiceError::BadRequest { err_msg } => write!(f, "{}", err_msg),
-            ServiceError::WrongPassword => {
-                write!(f, "Wrong name and password combination")
-            }
-            ServiceError::Unauthorized => write!(f, "Permission denied"),
-            ServiceError::InvalidToken { .. } => write!(f, "Token invaild"),
-            ServiceError::ServerError => write!(f, "The server has encountered an internal error"),
-        }
+        write!(f, "{}", self.message)
     }
 }
 
-impl ResponseError for ServiceError {
-    fn status_code(&self) -> StatusCode {
-        match self {
-            ServiceError::NotFound => StatusCode::NOT_FOUND,
-            ServiceError::BadRequest { .. } => StatusCode::BAD_REQUEST,
-            ServiceError::WrongPassword => StatusCode::FORBIDDEN,
-            ServiceError::Unauthorized => StatusCode::FORBIDDEN,
-            ServiceError::InvalidToken { .. } => StatusCode::BAD_REQUEST,
-            ServiceError::ServerError => StatusCode::INTERNAL_SERVER_ERROR,
-        }
-    }
-
-    fn error_response(&self) -> HttpResponse<BoxBody> {
-        match self {
-            ServiceError::InvalidToken { .. } => {
-                let mut cookie = Cookie::build("token", "")
-                    .path("/")
-                    .same_site(SameSite::Strict)
-                    .finish();
-                cookie.make_removal();
-                HttpResponse::build(self.status_code())
-                    .content_type("text/plain")
-                    .cookie(cookie)
-                    .body(self.to_string())
-            }
-            _ => HttpResponse::build(self.status_code())
-                .content_type("text/plain")
-                .body(self.to_string()),
-        }
+impl IntoResponse for ServiceError {
+    fn into_response(self) -> Response {
+        (self.status_code, self.message).into_response()
     }
 }
