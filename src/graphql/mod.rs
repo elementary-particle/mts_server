@@ -1,54 +1,67 @@
 mod query;
 
-use actix_web::web;
-use actix_web::HttpResponse;
+use std::sync::Arc;
 
-use juniper::http::GraphQLRequest;
+use axum::extract::{FromRef, Json, State};
+use axum::http::header::CONTENT_TYPE;
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
+use axum::{routing, Router};
+use juniper::http::{GraphQLRequest, GraphQLResponse};
 use juniper::{EmptyMutation, EmptySubscription, RootNode};
 
-use crate::auth::Claim;
+use crate::auth::{AuthRwLock, Claim, OptionalClaim};
 use crate::repo;
 
 pub struct Context {
     pub repo: repo::Repo,
-    pub claim: Claim,
+    pub option_claim: Option<Claim>,
+}
+
+pub fn build_router<S>() -> Router<S>
+where
+    S: Send + Sync + Clone + 'static,
+    AuthRwLock: FromRef<S>,
+    repo::Repo: FromRef<S>,
+    Schema: FromRef<S>,
+{
+    Router::new().route("/", routing::get(graphiql).post(index))
 }
 
 impl juniper::Context for Context {}
 
 pub struct QueryRoot;
 
-pub type Schema = RootNode<'static, QueryRoot, EmptyMutation<Context>, EmptySubscription<Context>>;
+pub type Schema =
+    Arc<RootNode<'static, QueryRoot, EmptyMutation<Context>, EmptySubscription<Context>>>;
 
-#[actix_web::get("/graphql")]
-async fn panel() -> HttpResponse {
-    HttpResponse::Ok()
-        .content_type("text/html; charset=utf-8")
-        .body(juniper::http::graphiql::graphiql_source("/graphql", None))
+async fn graphiql() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [(CONTENT_TYPE, "text/html; charset=utf-8")],
+        juniper::http::graphiql::graphiql_source("/graphql", None),
+    )
 }
 
-#[actix_web::post("/graphql")]
 async fn index(
-    schema: web::Data<Schema>,
-    claim: Claim,
-    repo: web::Data<repo::Repo>,
-    data: web::Json<GraphQLRequest>,
-) -> HttpResponse {
+    State(schema): State<Schema>,
+    State(repo): State<repo::Repo>,
+    OptionalClaim(option): OptionalClaim,
+    data: Json<GraphQLRequest>,
+) -> Json<GraphQLResponse> {
     let ctx = Context {
-        repo: repo.get_ref().clone(),
-        claim: claim,
+        repo: repo.clone(),
+        option_claim: option,
     };
-    HttpResponse::Ok()
-        .content_type("application/json")
-        .json(data.execute(&schema, &ctx).await)
-}
-
-pub fn configure(config: &mut web::ServiceConfig) {
-    config.service(panel).service(index);
+    Json(data.execute(&schema, &ctx).await)
 }
 
 pub fn create_schema() -> Schema {
-    Schema::new(QueryRoot, EmptyMutation::new(), EmptySubscription::new())
+    Arc::new(RootNode::new(
+        QueryRoot,
+        EmptyMutation::new(),
+        EmptySubscription::new(),
+    ))
 }
 
 #[derive(Debug)]

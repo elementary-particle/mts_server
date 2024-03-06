@@ -1,10 +1,22 @@
-use actix_web::web;
+use axum::extract::{FromRef, Query, State};
+use axum::{routing, Json, Router};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::api::ServiceError;
-use crate::auth::Claim;
+use crate::auth::{AuthRwLock, Claim};
 use crate::repo;
+
+pub fn build_router<S>() -> Router<S>
+where
+    S: Send + Sync + Clone + 'static,
+    AuthRwLock: FromRef<S>,
+    repo::Repo: FromRef<S>,
+{
+    Router::new()
+        .route("/", routing::get(get_list).post(add))
+        .route("/by-id", routing::get(get_by_id))
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -13,11 +25,10 @@ struct Project {
     pub name: String,
 }
 
-#[actix_web::get("/project")]
-pub async fn list(repo: web::Data<repo::Repo>) -> Result<web::Json<Vec<Project>>, ServiceError> {
-    let project_list = web::block(move || repo.get_project()).await??;
+async fn get_list(State(repo): State<repo::Repo>) -> Result<Json<Vec<Project>>, ServiceError> {
+    let project_list = repo.get_project()?;
 
-    Ok(web::Json(
+    Ok(Json(
         project_list
             .into_iter()
             .map(|t| Project {
@@ -30,19 +41,17 @@ pub async fn list(repo: web::Data<repo::Repo>) -> Result<web::Json<Vec<Project>>
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-struct ProjectQuery {
+struct IdQuery {
     pub id: Uuid,
 }
 
-#[actix_web::get("/project/by-id")]
-pub async fn get_by_id(
-    repo: web::Data<repo::Repo>,
-    project_query: web::Query<ProjectQuery>,
-) -> Result<web::Json<Project>, ServiceError> {
-    let project =
-        web::block(move || repo.get_project_by_id(project_query.into_inner().id)).await??;
+async fn get_by_id(
+    State(repo): State<repo::Repo>,
+    Query(query): Query<IdQuery>,
+) -> Result<Json<Project>, ServiceError> {
+    let project = repo.get_project_by_id(query.id)?;
 
-    Ok(web::Json(Project {
+    Ok(Json(Project {
         id: project.id,
         name: project.name,
     }))
@@ -54,19 +63,18 @@ struct NewProject {
     pub name: String,
 }
 
-#[actix_web::post("/project")]
-pub async fn add(
+async fn add(
+    State(repo): State<repo::Repo>,
     _claim: Claim,
-    repo: web::Data<repo::Repo>,
-    new_project: web::Json<NewProject>,
-) -> Result<web::Json<Uuid>, ServiceError> {
+    Json(new_project): Json<NewProject>,
+) -> Result<Json<Uuid>, ServiceError> {
     let project_id = Uuid::new_v4();
     let project = repo::Project {
         id: project_id,
-        name: new_project.into_inner().name,
+        name: new_project.name,
     };
 
-    web::block(move || repo.add_project(project)).await??;
+    repo.add_project(project)?;
 
-    Ok(web::Json(project_id))
+    Ok(Json(project_id))
 }

@@ -6,7 +6,7 @@ use crate::repo;
 
 use super::{Context, QueryRoot};
 
-#[juniper::graphql_object(Context = Context)]
+#[juniper::graphql_object(context = Context)]
 impl repo::Project {
     fn id(&self) -> Uuid {
         self.id
@@ -21,7 +21,7 @@ impl repo::Project {
     }
 }
 
-#[juniper::graphql_object(Context = Context)]
+#[juniper::graphql_object(context = Context)]
 impl repo::Unit {
     fn id(&self) -> Uuid {
         self.id
@@ -59,7 +59,7 @@ impl repo::Unit {
     }
 }
 
-#[juniper::graphql_object(Context = Context)]
+#[juniper::graphql_object(context = Context)]
 impl repo::Commit {
     fn id(&self) -> Uuid {
         self.id
@@ -86,7 +86,7 @@ impl repo::Commit {
     }
 }
 
-#[juniper::graphql_object(Context = Context)]
+#[juniper::graphql_object(context = Context)]
 impl QueryRoot {
     fn project_list(ctx: &Context) -> FieldResult<Vec<repo::Project>> {
         Ok(ctx.repo.get_project()?)
