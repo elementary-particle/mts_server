@@ -17,7 +17,7 @@ dotenvy = "0.15.7"
 env_logger = "0.11.3"
 futures-util = "0.3.30"
 hmac = "0.12.1"
-juniper = { git = "https://github.com/graphql-rust/juniper.git", features = ["chrono", "uuid"]}
+juniper = { version = "0.16.0", features = ["chrono", "uuid"] }
 r2d2 = "0.8.10"
 rand = "0.8.5"
 serde = { version = "1.0.196", features = ["derive"] }
