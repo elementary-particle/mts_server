@@ -109,11 +109,11 @@ impl Claim {
     fn from_token(s: &str, lock: Arc<RwLock<Secret>>) -> Result<Self, TokenError> {
         let mut parts = s.split(".");
 
-        let claim_raw = parts
+        let claim_bytes = parts
             .next()
             .and_then(|t| STANDARD.decode(t).ok())
             .ok_or(TokenError)?;
-        let signature_raw = parts
+        let sig_bytes = parts
             .next()
             .and_then(|t| STANDARD.decode(t).ok())
             .ok_or(TokenError)?;
@@ -133,8 +133,8 @@ impl Claim {
                 if key.expires > current_timestamp {
                     let mut mac = SimpleHmac::<Sha256>::new_from_slice(&key.bytes)?;
 
-                    mac.update(&claim_raw);
-                    if mac.verify_slice(&signature_raw).is_ok() {
+                    mac.update(&claim_bytes);
+                    if mac.verify_slice(&sig_bytes).is_ok() {
                         valid = true;
                         break;
                     }
@@ -145,7 +145,7 @@ impl Claim {
             return Err(TokenError);
         }
 
-        let claim: Claim = serde_cbor::from_slice(&claim_raw)?;
+        let claim: Claim = serde_cbor::from_slice(&claim_bytes)?;
         if claim.expires <= current_timestamp {
             return Err(TokenError);
         }
@@ -164,10 +164,10 @@ impl Claim {
         let claim_bytes = serde_cbor::to_vec(self)?;
         mac.update(&claim_bytes);
 
-        let signature_raw = mac.finalize().into_bytes();
+        let sig_bytes = mac.finalize().into_bytes();
 
         let claim_str = STANDARD.encode(&claim_bytes);
-        let sig_str = STANDARD.encode(&signature_raw);
+        let sig_str = STANDARD.encode(&sig_bytes);
 
         Ok(format!("{}.{}", claim_str, sig_str))
     }
