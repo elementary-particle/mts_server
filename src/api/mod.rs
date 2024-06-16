@@ -1,3 +1,4 @@
+mod lm;
 mod commit;
 mod project;
 mod unit;
@@ -8,18 +9,20 @@ use axum::response::{IntoResponse, Response};
 use axum::Router;
 
 use crate::auth::AuthRwLock;
-use crate::repo;
+use crate::{repo, LmApiClient};
 
 pub fn build_router<S>() -> Router<S>
 where
     S: Send + Sync + Clone + 'static,
     AuthRwLock: FromRef<S>,
     repo::Repo: FromRef<S>,
+    LmApiClient: FromRef<S>,
 {
     Router::new()
         .nest("/project", project::build_router())
         .nest("/unit", unit::build_router())
         .nest("/commit", commit::build_router())
+        .nest("/lm", lm::build_router())
 }
 
 #[derive(Debug)]
