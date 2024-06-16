@@ -17,7 +17,10 @@ dotenvy = "0.15.7"
 env_logger = "0.11.3"
 futures-util = "0.3.30"
 hmac = "0.12.1"
+hyper = { version = "1.3.1", features = ["client"] }
+hyper-util = { version = "0.1.3", features = ["client", "client-legacy"] }
 juniper = { version = "0.16.0", features = ["chrono", "uuid"] }
+log = "0.4.21"
 r2d2 = "0.8.10"
 rand = "0.8.5"
 serde = { version = "1.0.196", features = ["derive"] }
